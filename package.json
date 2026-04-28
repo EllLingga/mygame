@@ -1,0 +1,8 @@
+{
+  "name": "rakha-gacha-topup",
+  "version": "1.0.0",
+  "description": "Top-up system with admin panel for Rakha RNG Gacha",
+  "dependencies": {
+    "@netlify/blobs": "^7.0.0"
+  }
+}
