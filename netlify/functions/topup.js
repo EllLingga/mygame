@@ -1,12 +1,11 @@
 // netlify/functions/topup.js
-// Handles player top-up requests using Netlify Blobs for storage
-
 const { getStore } = require("@netlify/blobs");
 
-exports.handler = async (event) => {
+exports.handler = async (event, context) => {
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Content-Type": "application/json",
   };
 
@@ -14,61 +13,94 @@ exports.handler = async (event) => {
     return { statusCode: 200, headers, body: "" };
   }
 
-  const store = getStore("topup_requests");
+  try {
+    const store = getStore({
+      name: "topup_requests",
+      consistency: "strong",
+    });
 
-  // ── GET: player polls their own request status ──────────────────
-  if (event.httpMethod === "GET") {
-    const requestId = event.queryStringParameters?.id;
-    if (!requestId) {
-      return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing id" }) };
-    }
-    try {
-      const data = await store.get(requestId, { type: "json" });
-      if (!data) return { statusCode: 404, headers, body: JSON.stringify({ error: "Not found" }) };
+    // ── GET: cek status request ──────────────────────────────────
+    if (event.httpMethod === "GET") {
+      const requestId = event.queryStringParameters && event.queryStringParameters.id;
+      if (!requestId) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing id" }) };
+      }
+
+      let data = null;
+      try {
+        const raw = await store.get(requestId);
+        if (raw) data = JSON.parse(raw);
+      } catch (e) {
+        return { statusCode: 404, headers, body: JSON.stringify({ error: "Not found" }) };
+      }
+
+      if (!data) {
+        return { statusCode: 404, headers, body: JSON.stringify({ error: "Not found" }) };
+      }
+
       return { statusCode: 200, headers, body: JSON.stringify(data) };
-    } catch (e) {
-      return { statusCode: 500, headers, body: JSON.stringify({ error: e.message }) };
     }
-  }
 
-  // ── POST: player submits a new top-up request ───────────────────
-  if (event.httpMethod === "POST") {
-    try {
-      const body = JSON.parse(event.body);
-      const { playerName, gems, amount, paymentMethod, paymentProof } = body;
+    // ── POST: kirim request topup baru ───────────────────────────
+    if (event.httpMethod === "POST") {
+      let body;
+      try {
+        body = JSON.parse(event.body);
+      } catch (e) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON" }) };
+      }
+
+      const { playerName, gems, amount, paymentMethod } = body;
 
       if (!playerName || !gems || !amount || !paymentMethod) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing required fields" }) };
       }
 
-      const id = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const timestamp = Date.now();
+      const random = Math.random().toString(36).substr(2, 9);
+      const id = "req_" + timestamp + "_" + random;
+
       const request = {
-        id,
-        playerName,
-        gems,
-        amount,
-        paymentMethod,
-        paymentProof: paymentProof || null,
-        status: "pending", // pending | approved | rejected
+        id: id,
+        playerName: String(playerName),
+        gems: Number(gems),
+        amount: Number(amount),
+        paymentMethod: String(paymentMethod),
+        status: "pending",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         adminNote: "",
       };
 
-      await store.setJSON(id, request);
+      await store.set(id, JSON.stringify(request));
 
-      // Also maintain an index list
+      // Update index
       let index = [];
-      try { index = await store.get("__index__", { type: "json" }) || []; } catch {}
+      try {
+        const raw = await store.get("__index__");
+        if (raw) index = JSON.parse(raw);
+      } catch (e) {
+        index = [];
+      }
+
       index.unshift(id);
-      if (index.length > 200) index = index.slice(0, 200); // keep last 200
-      await store.setJSON("__index__", index);
+      if (index.length > 500) index = index.slice(0, 500);
+      await store.set("__index__", JSON.stringify(index));
 
-      return { statusCode: 200, headers, body: JSON.stringify({ success: true, id }) };
-    } catch (e) {
-      return { statusCode: 500, headers, body: JSON.stringify({ error: e.message }) };
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({ success: true, id: id }),
+      };
     }
-  }
 
-  return { statusCode: 405, headers, body: JSON.stringify({ error: "Method not allowed" }) };
+    return { statusCode: 405, headers, body: JSON.stringify({ error: "Method not allowed" }) };
+
+  } catch (err) {
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ error: err.message || "Internal server error" }),
+    };
+  }
 };
