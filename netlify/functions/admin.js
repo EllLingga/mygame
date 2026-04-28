@@ -1,6 +1,6 @@
 // netlify/functions/admin.js
 const JSONBIN_API_KEY = "$2a$10$.YFrLFivKiL4oHkYlXXZ7OZu0yDi2xC.sLg0SNS0DRlWGeUmtxYpq";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "ellao";
 
 const headers = {
   "Access-Control-Allow-Origin": "*",
