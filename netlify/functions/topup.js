@@ -1,66 +1,80 @@
 // netlify/functions/topup.js
-const { getStore } = require("@netlify/blobs");
+const JSONBIN_API_KEY = "$2a$10$.YFrLFivKiL4oHkYlXXZ7OZu0yDi2xC.sLg0SNS0DRlWGeUmtxYpq";
 
-exports.handler = async (event, context) => {
-  const headers = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Content-Type": "application/json",
-  };
+const headers = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Content-Type": "application/json",
+};
 
+async function getBinId() {
+  const binId = process.env.JSONBIN_BIN_ID;
+  if (binId) return binId;
+  const res = await fetch("https://api.jsonbin.io/v3/b", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Master-Key": JSONBIN_API_KEY,
+      "X-Bin-Name": "rakha-gacha-topup",
+      "X-Private": "true",
+    },
+    body: JSON.stringify({ requests: [] }),
+  });
+  const data = await res.json();
+  return data.metadata.id;
+}
+
+async function readData(binId) {
+  const res = await fetch("https://api.jsonbin.io/v3/b/" + binId + "/latest", {
+    headers: { "X-Master-Key": JSONBIN_API_KEY },
+  });
+  const data = await res.json();
+  return data.record || { requests: [] };
+}
+
+async function writeData(binId, record) {
+  await fetch("https://api.jsonbin.io/v3/b/" + binId, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Master-Key": JSONBIN_API_KEY,
+    },
+    body: JSON.stringify(record),
+  });
+}
+
+exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers, body: "" };
   }
 
   try {
-    const store = getStore({
-      name: "topup_requests",
-      consistency: "strong",
-    });
+    const binId = await getBinId();
+    const record = await readData(binId);
+    if (!record.requests) record.requests = [];
 
-    // ── GET: cek status request ──────────────────────────────────
     if (event.httpMethod === "GET") {
-      const requestId = event.queryStringParameters && event.queryStringParameters.id;
-      if (!requestId) {
-        return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing id" }) };
-      }
-
-      let data = null;
-      try {
-        const raw = await store.get(requestId);
-        if (raw) data = JSON.parse(raw);
-      } catch (e) {
-        return { statusCode: 404, headers, body: JSON.stringify({ error: "Not found" }) };
-      }
-
-      if (!data) {
-        return { statusCode: 404, headers, body: JSON.stringify({ error: "Not found" }) };
-      }
-
-      return { statusCode: 200, headers, body: JSON.stringify(data) };
+      const id = event.queryStringParameters && event.queryStringParameters.id;
+      if (!id) return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing id" }) };
+      const req = record.requests.find(function(r) { return r.id === id; });
+      if (!req) return { statusCode: 404, headers, body: JSON.stringify({ error: "Not found" }) };
+      return { statusCode: 200, headers, body: JSON.stringify(req) };
     }
 
-    // ── POST: kirim request topup baru ───────────────────────────
     if (event.httpMethod === "POST") {
-      let body;
-      try {
-        body = JSON.parse(event.body);
-      } catch (e) {
-        return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON" }) };
-      }
-
-      const { playerName, gems, amount, paymentMethod } = body;
+      const body = JSON.parse(event.body);
+      const playerName = body.playerName;
+      const gems = body.gems;
+      const amount = body.amount;
+      const paymentMethod = body.paymentMethod;
 
       if (!playerName || !gems || !amount || !paymentMethod) {
-        return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing required fields" }) };
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing fields" }) };
       }
 
-      const timestamp = Date.now();
-      const random = Math.random().toString(36).substr(2, 9);
-      const id = "req_" + timestamp + "_" + random;
-
-      const request = {
+      const id = "req_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6);
+      const newReq = {
         id: id,
         playerName: String(playerName),
         gems: Number(gems),
@@ -72,35 +86,16 @@ exports.handler = async (event, context) => {
         adminNote: "",
       };
 
-      await store.set(id, JSON.stringify(request));
+      record.requests.unshift(newReq);
+      if (record.requests.length > 200) record.requests = record.requests.slice(0, 200);
+      await writeData(binId, record);
 
-      // Update index
-      let index = [];
-      try {
-        const raw = await store.get("__index__");
-        if (raw) index = JSON.parse(raw);
-      } catch (e) {
-        index = [];
-      }
-
-      index.unshift(id);
-      if (index.length > 500) index = index.slice(0, 500);
-      await store.set("__index__", JSON.stringify(index));
-
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({ success: true, id: id }),
-      };
+      return { statusCode: 200, headers, body: JSON.stringify({ success: true, id: id, binId: binId }) };
     }
 
     return { statusCode: 405, headers, body: JSON.stringify({ error: "Method not allowed" }) };
 
   } catch (err) {
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ error: err.message || "Internal server error" }),
-    };
+    return { statusCode: 500, headers, body: JSON.stringify({ error: err.message }) };
   }
 };
