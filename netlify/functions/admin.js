@@ -1,15 +1,13 @@
 // netlify/functions/admin.js
-// Admin panel backend — list, approve, reject top-up requests
-
 const { getStore } = require("@netlify/blobs");
 
-// Simple admin password check (change this in real use via env var ADMIN_PASSWORD)
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
 
-exports.handler = async (event) => {
+exports.handler = async (event, context) => {
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, X-Admin-Password",
+    "Access-Control-Allow-Methods": "GET, PATCH, OPTIONS",
     "Content-Type": "application/json",
   };
 
@@ -18,43 +16,61 @@ exports.handler = async (event) => {
   }
 
   // Auth check
-  const pwd = event.headers["x-admin-password"] || event.queryStringParameters?.pwd;
+  const pwd = (event.headers && (event.headers["x-admin-password"] || event.headers["X-Admin-Password"]))
+    || (event.queryStringParameters && event.queryStringParameters.pwd);
+
   if (pwd !== ADMIN_PASSWORD) {
     return { statusCode: 401, headers, body: JSON.stringify({ error: "Unauthorized" }) };
   }
 
-  const store = getStore("topup_requests");
+  try {
+    const store = getStore({
+      name: "topup_requests",
+      consistency: "strong",
+    });
 
-  // ── GET: list all requests ───────────────────────────────────────
-  if (event.httpMethod === "GET") {
-    try {
+    // ── GET: list semua request ──────────────────────────────────
+    if (event.httpMethod === "GET") {
       let index = [];
-      try { index = await store.get("__index__", { type: "json" }) || []; } catch {}
+      try {
+        const raw = await store.get("__index__");
+        if (raw) index = JSON.parse(raw);
+      } catch (e) {
+        index = [];
+      }
 
       const requests = [];
       for (const id of index.slice(0, 100)) {
         try {
-          const req = await store.get(id, { type: "json" });
-          if (req) requests.push(req);
-        } catch {}
+          const raw = await store.get(id);
+          if (raw) requests.push(JSON.parse(raw));
+        } catch (e) {}
       }
-      return { statusCode: 200, headers, body: JSON.stringify(requests) };
-    } catch (e) {
-      return { statusCode: 500, headers, body: JSON.stringify({ error: e.message }) };
-    }
-  }
 
-  // ── PATCH: approve or reject a request ──────────────────────────
-  if (event.httpMethod === "PATCH") {
-    try {
-      const body = JSON.parse(event.body);
-      const { id, action, adminNote } = body; // action: "approve" | "reject"
+      return { statusCode: 200, headers, body: JSON.stringify(requests) };
+    }
+
+    // ── PATCH: approve atau reject request ───────────────────────
+    if (event.httpMethod === "PATCH") {
+      let body;
+      try {
+        body = JSON.parse(event.body);
+      } catch (e) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "Invalid JSON" }) };
+      }
+
+      const { id, action, adminNote } = body;
 
       if (!id || !action) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "Missing id or action" }) };
       }
 
-      const existing = await store.get(id, { type: "json" });
+      let existing = null;
+      try {
+        const raw = await store.get(id);
+        if (raw) existing = JSON.parse(raw);
+      } catch (e) {}
+
       if (!existing) {
         return { statusCode: 404, headers, body: JSON.stringify({ error: "Request not found" }) };
       }
@@ -63,14 +79,18 @@ exports.handler = async (event) => {
       existing.adminNote = adminNote || "";
       existing.updatedAt = new Date().toISOString();
 
-      await store.setJSON(id, existing);
+      await store.set(id, JSON.stringify(existing));
 
       return { statusCode: 200, headers, body: JSON.stringify({ success: true, request: existing }) };
-    } catch (e) {
-      return { statusCode: 500, headers, body: JSON.stringify({ error: e.message }) };
     }
+
+    return { statusCode: 405, headers, body: JSON.stringify({ error: "Method not allowed" }) };
+
+  } catch (err) {
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ error: err.message || "Internal server error" }),
+    };
   }
-
-  return { statusCode: 405, headers, body: JSON.stringify({ error: "Method not allowed" }) };
 };
-
